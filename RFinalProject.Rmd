@@ -1,0 +1,337 @@
+---
+title: "TheFinalProject"
+date: "2023-04-26"
+output:
+  word_document: default
+---
+
+
+### Import libraries and connect to SQL
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(dplyr)
+library(DBI)
+library(odbc)
+library(fastDummies)
+library(boot)
+library(plyr)
+library(neuralnet)
+library(caret)
+library(gridExtra)
+library(reshape2)
+library(TTR)
+library(randomForest)
+
+
+# conn <- DBI::dbConnect(
+#   odbc::odbc(),
+#   Driver="SQL Server",
+#   Server="LAPTOP-3AMVCH9J\\SQLEXPRESS",
+#   Database="QuantData",
+#   options(connectionObserver = NULL)
+# )
+
+norm = function(x){
+  m0 = min(x)
+  m1 = max(x)
+  result = (x - m0)/(m1 - m0)
+  return(result)
+}
+
+regular = function(x, y){
+  m0 = min(y)
+  m1 = max(y)
+  result = x*(m1 - m0) + m0
+  return(result)
+}
+
+
+```
+# Machine Learning Round One
+### Fetch datasets from SQL
+```{r}
+# bike_donations <- dbGetQuery(conn, "SELECT TOP 50000 * FROM dbo.BikeDonations")
+# bike_events <- dbGetQuery(conn, "SELECT * FROM dbo.BikeEvents")
+#write_csv(bike_donations, "BikeDonations.csv")
+#write_csv(bike_events, "BikeEvents.csv")
+```
+### Read generated csv files
+```{r}
+bike_donations <- read_csv("BikeDonations.csv")
+bike_events <- read_csv("BikeEvents.csv")
+```
+### Join the tables and omit N/A variables
+```{r}
+df2 <- left_join(x=bike_donations, y=bike_events, by="EventID")
+df2[df2 == "N/A"] <- NA
+df2 <- df2 %>% na.omit(df2)
+```
+### Convert string variables from dataset into numeric
+```{r}
+df3 <- df2 %>%
+  mutate(GiftAmount=as.numeric(GiftAmt.x),
+         Goals=as.numeric(Goals),
+         ActiveReg=as.numeric(ActiveReg),
+         NoReg=as.numeric(TotalFees),
+         SentEmails=as.numeric(SentEmails)) %>%
+  select(-EventID,-FiscalYear.x,-GiftAmt.x,-GiftAmt.y,-TotalFees,-ConfirmedGifts,-TotalOnlineGifts,-FiscalYear.y,-CampID,-DonorConsID,-Goals,-TeamID)
+
+```
+### Fix some of the variables spacing and such
+```{r}
+df3[df3 == "I have a Friend or Co-worker with MS"] <- "FriendOrCoWorker"
+df3[df3 == "Bad (Soft Bounce)"] <- "SoftBounce"
+df3[df3 == "Bad (Hard Bounce)"] <- "HardBounce"
+df3[df3 == "Relative: Parent of person with MS"] <- "RelativeParent"
+df3[df3 == "Relative: Other"] <- "RelativeOther"
+df3[df3 == "I have a Friend of Co-worker with MS"] <- "FriendOfCoWorker"
+```
+### Parse dummy variables in dataset
+```{r}
+dataset <- fastDummies::dummy_cols(df3) %>%
+  select(-GiftType,-PmtMethod,-Registered,-EmailStatus,-Connection)
+colnames(dataset) = gsub(" ", "_", colnames(dataset))
+
+
+pre_norm_set <- dataset
+```
+### Extract Column Names
+```{r}
+colnames(dataset)
+```
+### Calculate correlation matrix of variables
+```{r}
+library(corrplot)
+corrplot(cor(dataset), method = 'ellipse', order = 'AOE', type = 'upper', tl.cex = 0.5)
+```
+### Prepare data for machine learning: Round One
+```{r}
+set.seed(1337)
+data_split <- initial_split(pre_norm_set, prop=0.7)
+data_train <- data_split %>% training()
+data_test <- data_split %>% testing()
+
+dataset <- pre_norm_set %>%
+  mutate(
+    GiftAmount=norm(GiftAmount),
+    ActiveReg=norm(ActiveReg),
+    NoReg=norm(NoReg),
+    SentEmails=norm(SentEmails)
+  )
+
+norm_split <- initial_split(dataset, prop=0.7)
+norm_train <- norm_split %>% training()
+norm_test <- norm_split %>% testing()
+```
+### Model A1: Neural Network
+```{r}
+nnA <- neuralnet(GiftAmount ~ ., data=norm_train, hidden=c(8, 4))
+plot(nnA)
+```
+### Calculate RMSE for the first runs neural net model
+```{r}
+predA <- compute(nnA, norm_test)
+predA <- regular(predA$net.result, data_test$GiftAmount)
+xx1 <- data_test$GiftAmount
+
+RMSE_NN_ModelA <- (sum((xx1 - predA)^2) / length(xx1)) ^ 0.5
+cat('RMSE for Neural Network Model A1: ', RMSE_NN_ModelA)
+```
+### Graph the actual versus the predicted values
+```{r}
+ggplot(mapping=aes(x=xx1, y=predA)) +
+  geom_point() +
+  labs(title="NN Model A", x="Actual", y="Predicted")
+```
+### Create a log version of the plot above
+```{r}
+options(scipen=999)
+ggplot(mapping=aes(x=xx1, y=predA)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(title="NN Model A (Log)", x="Actual", y="Predicted")
+```
+### Model A2: MultiVariable Regression
+```{r}
+reg_modelB1 <- lm(GiftAmount ~ ., data=data_train)
+summary(reg_modelB1)
+```
+### Compute the RMSE of the Regression model
+```{r}
+predB1 <- reg_modelB1 %>% predict(data_test)
+
+rt <- data_test$GiftAmount
+
+RMSE_RegModelB1 <- (sum((rt - predB1)^2)/length(rt))^0.5
+cat('RMSE for Regression Model B1: ', RMSE_RegModelB1)
+```
+### Graph the results of the first regression model
+```{r}
+ggplot(mapping=aes(x=rt, y=predB1)) +
+  geom_point() +
+  labs(title="LinReg Model B1", x="Actual", y="Predicted")
+```
+### Graph the previous graph using the log scale
+```{r}
+ggplot(mapping=aes(x=rt, y=predB1)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(title="LinReg Model B1 (Log)", x="Actual", y="Predicted")
+```
+### Print all significant variables
+```{r}
+coef1 <- data.frame(summary(reg_modelB1)$coef[summary(reg_modelB1)$coef[,4] <= .05, 4])
+coef1
+```
+# Machine Learning Round Two
+### Run your second neural network model
+```{r}
+nnB <- neuralnet(GiftAmount ~ GiftType_offline + PmtMethod_Cash + EmailStatus_Good + EmailStatus_HardBounce + EmailStatus_SoftBounce + Connection_Blank + Connection_Caregiver_of_Person_with_MS + Connection_Child_has_MS + Connection_Friend_has_MS + Connection_I_have_MS + Connection_None + Connection_Other + Connection_Parent_has_MS + Connection_Possible_MS + Connection_Relative_has_MS + Connection_Sibling_has_MS, data=norm_train, hidden=c(8, 4))
+plot(nnB)
+```
+### Calculate the RMSE for the second neural network
+```{r}
+predA2 <- compute(nnB, norm_test)
+predA2 <- regular(predA2$net.result, data_test$GiftAmount)
+xx12 <- data_test$GiftAmount
+
+RMSE_NN_ModelA2 <- (sum((xx12 - predA2)^2) / length(xx12)) ^ 0.5
+cat('RMSE for Neural Network Model A2: ', RMSE_NN_ModelA2)
+```
+### Graph the actual and expected variables based off the second neural network model
+```{r}
+ggplot(mapping=aes(x=xx12, y=predA2)) + 
+  geom_point() +
+  labs(title="Neural Net Prediction Model 2", x="Actual", y="Predicted")
+```
+### Log plot of neural network model 2
+```{r}
+ggplot(mapping=aes(x=xx12, y=predA2)) + 
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(title="Neural Net Prediction Model 2 (Log)", x="Actual", y="Predicted")
+```
+### Calculate your second linear regression with the significant variables
+```{r}
+reg_modelB2 <- lm(GiftAmount ~ GiftType_offline + PmtMethod_Cash + EmailStatus_Good + EmailStatus_HardBounce + EmailStatus_SoftBounce + Connection_Blank + Connection_Caregiver_of_Person_with_MS + Connection_Child_has_MS + Connection_Friend_has_MS + Connection_I_have_MS + Connection_None + Connection_Other + Connection_Parent_has_MS + Connection_Possible_MS + Connection_Relative_has_MS + Connection_Sibling_has_MS, data=data_train)
+summary(reg_modelB2)
+```
+### Calculate RMSE off you second regression model
+```{r}
+predB2 <- reg_modelB2 %>% predict(data_test)
+
+rt2 <- data_test$GiftAmount
+
+RMSE_RegModelB2 <- (sum((rt2 - predB2)^2)/length(rt2))^0.5
+cat('RMSE for Regression Model B2: ', RMSE_RegModelB2)
+```
+### Plot the actual vs. predicted values for your second regression
+```{r}
+ggplot(mapping=aes(x=rt2, y=predB2)) +
+  geom_point() +
+  labs(title="Regression Model 2 Actual vs. Predicted", x="Actual", y="Predicted")
+```
+### Give the log plot of the plot above
+```{r}
+ggplot(mapping=aes(x=rt2, y=predB2)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(title="Regression Model 2 Actual vs. Predicted (Log)", x="Actual", y="Predicted")
+```
+# Ensemble Method: Combining Neural Network With Decison Tree
+```{r}
+ensemble_set <- pre_norm_set %>%
+  select(ActiveReg, NoReg, SentEmails,GiftAmount, EmailStatus_Good, Connection_Friend_has_MS)
+
+set.seed(567)
+ensemble_split <- initial_split(ensemble_set, prop=0.7)
+ensemble_train <- ensemble_split %>% training()
+ensemble_test <- ensemble_split %>% testing()
+
+ensemble_set <- ensemble_set %>%
+  mutate(
+    ActiveReg=norm(ActiveReg),
+    NoReg=norm(NoReg),
+    SentEmails=norm(SentEmails),
+    GiftAmount=norm(GiftAmount)
+  )
+
+norm_e_split <- initial_split(ensemble_set, prop=0.7)
+norm_e_train <- norm_e_split %>% training()
+norm_e_test <- norm_e_split %>% testing()
+
+```
+### Build a neural network model
+```{r}
+nnC <- neuralnet(GiftAmount ~ ., data=norm_e_train, hidden=c(5, 3))
+plot(nnC)
+```
+### Alter the dataset to hold the predictions
+```{r}
+predictions <- compute(nnC, norm_e_test)
+netResults <- regular(predictions$net.result, ensemble_test$GiftAmount)
+
+# Replace the actual amount with the predicted amount, bin Gift Amount
+
+dset <- ensemble_test %>%
+  select(-GiftAmount) %>%
+  mutate(GiftAmount=cut(netResults, breaks=c(-1, 90, 150), labels=c("Low Donation", "High Donation")))
+
+table(unlist(dset[, c("GiftAmount")]))
+```
+### Plot Histogram of Gift Amount Class
+```{r}
+dset %>%
+  ggplot(mapping=aes(x=GiftAmount)) +
+  geom_histogram(stat="count")
+```
+
+### Split new dataset
+```{r}
+#set.seed(999)
+tree_split <- initial_split(dset, prop=0.7)
+tree_train <- tree_split %>% training()
+tree_test <- tree_split %>% testing()
+
+
+```
+### Train decision tree
+```{r}
+library(rpart)
+library(rpart.plot, warn.conflicts=FALSE)
+
+fit <- rpart(GiftAmount ~ ., data=tree_train, method="class",control=rpart.control(cp=0))
+
+rpart.plot(fit, extra=100)
+```
+### Generate Classifications from the Decision Tree (Confusion Matrix)
+```{r}
+prediction <- predict(fit, tree_test, type='class')
+confusionMatrix(prediction, tree_test$GiftAmount, mode="everything")
+```
+### Compute ROC Curve and AUC
+```{r}
+library(pROC)
+prob_pred <- predict(fit, tree_test, type='prob')[,2]
+
+roc_curve <- roc(tree_test$GiftAmount, prob_pred)
+plot(roc_curve, main="ROC Curve", print.auc=TRUE, legacy.axes=TRUE, revC=TRUE)
+auc(roc_curve)
+```
+```{r}
+
+```
+```{r}
+
+```
+```{r}
+
+```
+```{r}
+
+```
