@@ -1,2 +1,2 @@
 # DataMining2_FinalProject
-My task in this project was to predict and classify donations amounts based on various variables.
+My task in this project was to predict and classify donations amounts based on various variables. I had to use a multivariable regression model, a neural network, and an ensemble model with a neural network and a decision tree classifier. The data was loaded through Microsoft SQL Server and imported into R. Python was used to clean the initial datasets from special characters which were making the importing process difficult.
