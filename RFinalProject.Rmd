@@ -27,8 +27,8 @@ library(randomForest)
 # conn <- DBI::dbConnect(
 #   odbc::odbc(),
 #   Driver="SQL Server",
-#   Server="LAPTOP-3AMVCH9J\\SQLEXPRESS",
-#   Database="QuantData",
+#   Server="COMPUTER NAME IN MY SQL SERVER",
+#   Database="DATABASE NAME",
 #   options(connectionObserver = NULL)
 # )
 
